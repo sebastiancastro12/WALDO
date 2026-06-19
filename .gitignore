@@ -1,0 +1,33 @@
+# Entornos virtuales
+.venv/
+venv/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribución / build
+build/
+dist/
+*.egg-info/
+
+# Caché de herramientas
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Dependencias externas (no-PyPI, instaladas manualmente)
+cosmostat/
+Sparse2D/
+
+# Datos y pesos (binarios pesados, no versionar)
+data/
+weights/
+*.pt
+*.fits
+*.h5
+*.hdf5
+
+# Sistema
+.DS_Store
