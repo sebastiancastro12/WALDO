@@ -269,8 +269,20 @@ class Wavelet2D1DTransform(object):
                                        type_of_filter_1d=self.filter_1d,
                                        type_of_transform_1d=self.transform_1d)
         
+        # Work in single precision to halve the memory footprint of the
+        # (large) coefficient arrays. The undecimated 2D starlet keeps every
+        # spatial sub-band at full resolution, so coefficient storage scales
+        # with the image size; float32 is more than enough precision for the
+        # denoising thresholds while using half the RAM of float64.
+        cube = np.ascontiguousarray(cube, dtype=np.float32)
+
         # Perform the forward wavelet transform
         coeffs = self._mr2d1d.transform(cube)
+
+        # Guarantee single precision downstream even if the backend promoted
+        # the coefficients to float64 internally.
+        if coeffs.dtype != np.float32:
+            coeffs = coeffs.astype(np.float32, copy=False)
 
         # Extract index mapping and shape information for coefficient organization
         # This metadata is essential for accessing specific sub-bands during processing
@@ -759,6 +771,9 @@ class Denoiser2D1D(object):
             if self._verbose is True:
                 print(f"Number of 2D wavelet scales set to {num_scales_2d} "
                       "(maximum value allowed by input image)")
+        else:
+            if self._verbose is True:
+                print(f"Number of 2D wavelet scales set to {num_scales_2d}")
         
         # Set the number of 1D decomposition scales
         num_scales_1d_max = int(np.log2(x.shape[0]))
@@ -768,7 +783,9 @@ class Denoiser2D1D(object):
             if self._verbose is True:
                 print(f"Number of 1D wavelet scales set to {num_scales_1d} "
                       "(maximum value allowed by input image)")
-                
+        else:
+            if self._verbose is True:
+                print(f"Number of 1D wavelet scales set to {num_scales_1d}")
         # Check that the pre-computed noise scaling exists for the requested scales
         # if (num_scales_2d - 1 > self.mr2d1d.num_precomputed[0] or 
         #     num_scales_1d - 1 > self.mr2d1d.num_precomputed[1]):
@@ -781,7 +798,14 @@ class Denoiser2D1D(object):
         if noise_cube is not None:
             assert x.shape == noise_cube.shape, "Invalid noise estimate shape"
 
-        # Initialise settings for the denoiser
+        # Initialise settings for the denoiser.
+        # Cast the working cubes to single precision: every model/residual/
+        # delta copy below inherits this dtype, halving peak RAM for large
+        # cubes without affecting the denoising result at threshold precision.
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        y = np.ascontiguousarray(y, dtype=np.float32)
+        if noise_cube is not None:
+            noise_cube = np.ascontiguousarray(noise_cube, dtype=np.float32)
         self._data = x
         self._signal = y
         self._num_bands = self._data.shape[0]

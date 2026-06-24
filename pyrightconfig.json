@@ -1,0 +1,14 @@
+{
+  "typeCheckingMode": "off",
+  "exclude": [
+    "data",
+    ".venv",
+    "cosmostat",
+    "vendor",
+    "weights",
+    "**/.git",
+    "**/__pycache__",
+    "**/.ipynb_checkpoints",
+    "**/node_modules"
+  ]
+}
