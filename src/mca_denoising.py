@@ -200,7 +200,15 @@ def _threshold_subbands(coeffs, delta, sigma_map, coeffs_model=None,
     de ESTA componente en ESTE diccionario) se aplica reweighted L1
     (Candes, Wakin & Boyd 2008): los coeficientes grandes del modelo
     reciben peso ~0 (umbral ~0, menos sesgo de encogimiento) y los
-    pequenos reciben peso grande (mas sparsity).
+    pequenos / ausentes reciben peso 1 (umbral = base, NUNCA mayor).
+
+    NOTA: el peso se CAPA en 1.0 (thr <= base). Sin este tope, un modelo
+    casi vacio (|model|~0) genera weights = base/eps astronomicos que
+    matan cualquier coeficiente nuevo; combinado con el calendario
+    descendente (el modelo entra vacio al primer reweight) el modelo se
+    queda clavado en su estado inicial y el denoising no avanza. El
+    reweighted-L1 solo debe REDUCIR el umbral en coeficientes fuertes ya
+    presentes en el modelo, nunca aumentarlo por encima del piso base.
     """
     out = []
     for b, w1d in enumerate(coeffs):
@@ -212,7 +220,9 @@ def _threshold_subbands(coeffs, delta, sigma_map, coeffs_model=None,
                 thr = base
             else:
                 model_sub = coeffs_model[b][s]
-                weights = base / (np.abs(model_sub) + eps)
+                # peso de Candes capado en 1: solo des-sesga coeficientes
+                # grandes del modelo (peso < 1), nunca endurece el umbral.
+                weights = np.minimum(base / (np.abs(model_sub) + eps), 1.0)
                 mask = np.abs(w1d[s]) > base
                 thr = np.where(mask, weights * base, base)
             w_new[s] = soft_threshold(w1d[s], thr)
@@ -281,6 +291,8 @@ def mca_denoise_cube(
     reweight: bool = False,
     eps: float = 1e-33,
     reference: np.ndarray | None = None,
+    ref_mask: np.ndarray | None = None,
+    ref_support_frac: float | None = None,
     noise_cube: np.ndarray | None = None,
     sigma_global: float | None = None,
     calibrate: bool = True,
@@ -364,6 +376,19 @@ def mca_denoise_cube(
     reference : (n_chan, ny, nx) | None
         Cubo limpio para seleccionar el mejor modelo por RMSE. Sin
         referencia se devuelve el modelo convergido (ultimo).
+    ref_mask : np.ndarray | None
+        Mascara booleana (broadcastable al cubo) que restringe el RMSE de
+        seleccion al SOPORTE de la senal. Con senal dispersa, el RMSE
+        GLOBAL premia el estimate vacio (el fondo de ceros domina la media
+        y cualquier extraccion real anade ruido que sube el RMSE), de modo
+        que el "mejor" modelo acaba siendo ~0. Midiendo el RMSE solo donde
+        hay senal, el modelo vacio tiene error alto (no recupera el arco) y
+        recuperar la estructura baja el error. Si None y se da
+        `ref_support_frac`, la mascara se deriva de `reference`.
+    ref_support_frac : float | None
+        Fraccion del maximo de |reference| para derivar `ref_mask`
+        automaticamente: soporte = |reference| > frac * |reference|.max().
+        Tipico 0.01-0.1. Ignorado si se pasa `ref_mask` explicita.
     noise_cube : np.ndarray | None
         Realizacion de ruido a propagar para calibrar sigma (manda sobre
         sigma_global si se da).
@@ -447,7 +472,35 @@ def mca_denoise_cube(
     best_score = np.inf
     best_iter = -1
 
+    # --- mascara de soporte para el RMSE de seleccion ---
+    # Sin mascara, el RMSE global premia el estimate vacio cuando la senal
+    # es dispersa. Restringiendo el RMSE al soporte, el modelo vacio tiene
+    # error alto y recuperar la estructura baja el error.
+    sel_mask = None
+    if use_reference:
+        if ref_mask is not None:
+            sel_mask = np.broadcast_to(np.asarray(ref_mask, dtype=bool),
+                                       reference.shape)
+        elif ref_support_frac is not None:
+            ref_abs = np.abs(reference)
+            ref_peak = float(ref_abs.max())
+            if ref_peak > 0:
+                sel_mask = ref_abs > ref_support_frac * ref_peak
+        if sel_mask is not None and not sel_mask.any():
+            sel_mask = None  # mascara vacia -> RMSE global (fallback)
+        if verbose:
+            if sel_mask is not None:
+                print(f"(*) Seleccion por RMSE en soporte: "
+                      f"{int(sel_mask.sum())} voxeles "
+                      f"({100.0 * sel_mask.mean():.2f}% del cubo).")
+            else:
+                print("(*) Seleccion por RMSE GLOBAL (sin mascara de "
+                      "soporte; con senal dispersa puede premiar el "
+                      "estimate vacio).")
+
     def _rmse(a, b):
+        if sel_mask is not None:
+            return float(np.sqrt(np.mean((a[sel_mask] - b[sel_mask]) ** 2)))
         return float(np.sqrt(np.mean((a - b) ** 2)))
 
     # lambda_max para el calendario: MOM sobre el residuo inicial. Es el
